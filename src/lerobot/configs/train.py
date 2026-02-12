@@ -116,7 +116,9 @@ class TrainPipelineConfig(HubMixin):
             else:
                 self.job_name = f"{self.env.type}_{self.policy.type}"
 
-        if not self.resume and isinstance(self.output_dir, Path) and self.output_dir.is_dir():
+        # Only check output_dir existence on rank 0 to avoid race condition in multi-GPU training
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        if local_rank == 0 and not self.resume and isinstance(self.output_dir, Path) and self.output_dir.is_dir():
             raise FileExistsError(
                 f"Output directory {self.output_dir} already exists and resume is {self.resume}. "
                 f"Please change your output directory so that {self.output_dir} is not overwritten."

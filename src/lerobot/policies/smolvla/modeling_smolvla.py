@@ -392,12 +392,12 @@ class SmolVLAPolicy(PreTrainedPolicy):
         if reduction == "none":
             # Return per-sample losses (B,) by averaging over time and action dims
             per_sample_loss = losses.mean(dim=(1, 2))
-            loss_dict["loss"] = per_sample_loss.mean().item()
+            loss_dict["loss_batch"] = per_sample_loss.mean().item()  # Renamed to avoid overwriting averaged loss
             return per_sample_loss, loss_dict
         else:
             # Default: return scalar mean loss
             loss = losses.mean()
-            loss_dict["loss"] = loss.item()
+            loss_dict["loss_batch"] = loss.item()
             return loss, loss_dict
 
     def prepare_images(self, batch):
