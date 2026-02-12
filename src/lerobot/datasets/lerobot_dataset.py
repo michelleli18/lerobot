@@ -739,10 +739,23 @@ class LeRobotDataset(torch.utils.data.Dataset):
         # Build a mapping: absolute_index -> relative_index_in_filtered_dataset
         self._absolute_to_relative_idx = None
         if self.episodes is not None:
-            self._absolute_to_relative_idx = {
-                abs_idx.item() if isinstance(abs_idx, torch.Tensor) else abs_idx: rel_idx
-                for rel_idx, abs_idx in enumerate(self.hf_dataset["index"])
-            }
+            # self._absolute_to_relative_idx = {
+            #     abs_idx.item() if isinstance(abs_idx, torch.Tensor) else abs_idx: rel_idx
+            #     for rel_idx, abs_idx in enumerate(self.hf_dataset["index"])
+            # }
+            self._absolute_to_relative_idx = {}
+            # Go through each frame in the episode
+            for rel_idx in range(len(self.hf_dataset)):
+                # self.meta.episodes[rel_idx] retrieves actual episode index "[task_num][episode_num]"
+                # But self.hf.dataset[rel_idx] properly retrieves the row pos you'd need to retrieve from self.meta.episodes
+                # The previous concern was that self.hf.dataset[rel_idx] would return something like 100010 to get the 1st row of task 1 (which wouldn't work on self.meta.episodes because each row is represented as an episode), but instead it properly returns ep_idx = 0. This allows us to retrieve the 'dataset_from_index' from self.meta.episodes[ep_idx] appropriately. 
+                ep_idx = self.hf_dataset[rel_idx]["episode_index"]
+                ep_idx = ep_idx.item() if hasattr(ep_idx, "item") else ep_idx
+                per_ep_idx = self.hf_dataset[rel_idx]["index"]
+                per_ep_idx = per_ep_idx.item() if hasattr(per_ep_idx, "item") else per_ep_idx
+                # Compute absolute index from episode start + per-episode index
+                abs_idx = self.meta.episodes[ep_idx]["dataset_from_index"] + per_ep_idx
+                self._absolute_to_relative_idx[abs_idx] = rel_idx
 
         # Setup delta_indices
         if self.delta_timestamps is not None:
