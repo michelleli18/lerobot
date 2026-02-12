@@ -16,6 +16,8 @@
 import dataclasses
 import logging
 import time
+import numpy as np
+from copy import deepcopy
 from contextlib import nullcontext
 from pprint import pformat
 from typing import Any
@@ -30,6 +32,7 @@ from lerobot.configs.train import TrainPipelineConfig
 from lerobot.datasets.factory import make_dataset
 from lerobot.datasets.sampler import EpisodeAwareSampler
 from lerobot.datasets.utils import cycle
+from lerobot.datasets.compute_stats import compute_episode_stats
 from lerobot.envs.factory import make_env, make_env_pre_post_processors
 from lerobot.envs.utils import close_envs
 from lerobot.optim.factory import make_optimizer_and_scheduler
@@ -52,7 +55,6 @@ from lerobot.utils.utils import (
     has_method,
     init_logging,
 )
-
 
 def update_policy(
     train_metrics: MetricsTracker,
@@ -148,6 +150,43 @@ def update_policy(
     return train_metrics, output_dict
 
 
+def _recompute_stats_from_dataset(dataset):
+    """
+    Recompute normalization stats from filtered subset of episodes used for training.
+    """
+    features = dataset.features
+    original_stats = deepcopy(dataset.meta.stats)
+
+    # Raw data without torch transform
+    hf_ds = dataset.hf_dataset.with_format("numpy")
+
+    # Rebuild episode_data dict for compute_episode_stats, skip images, videos, strings (no need to recompute)
+    episode_data = {}
+    for key, feat in features.items():
+        if feat["dtype"] in ["image", "video", "string"]:
+            continue
+        if key in hf_ds.column_names:
+            episode_data[key] = np.array(hf_ds[key])
+
+    logging.info(f"  Recomputing stats for keys: {list(episode_data.keys())}")
+
+    # From lerobot
+    stats = compute_episode_stats(episode_data, features)
+
+    # Use image/video stats from global dataset stats
+    for key in original_stats:
+        if key not in stats:
+            stats[key] = original_stats[key]
+
+    for key in episode_data:
+        if key in stats:
+            mean, std = stats[key]["mean"], stats[key]["std"]
+            logging.info(f"  {key}: mean range [{mean.min():.4f}, {mean.max():.4f}], "
+                        f"std range [{std.min():.6f}, {std.max():.4f}]")
+
+    return stats
+
+
 @parser.wrap()
 def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     """
@@ -220,6 +259,16 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     # Now all other processes can safely load the dataset
     if not is_main_process:
         dataset = make_dataset(cfg)
+
+    # Recompute normalization stats from training data if using filtered subset of episodes to avoid compressing joints toward global mean
+    if cfg.dataset.episodes is not None:
+        if is_main_process:
+            logging.info(
+                f"Recomputing normalization stats from filtered episodes {cfg.dataset.episodes} "
+                f"({dataset.num_frames} frames) instead of using global dataset stats."
+            )
+        _recomputed_stats = _recompute_stats_from_dataset(dataset)
+        dataset.meta.stats = _recomputed_stats
 
     # Create environment used for evaluating checkpoints during training on simulation data.
     # On real-world data, no need to create an environment as evaluations are done outside train.py,
