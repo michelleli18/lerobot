@@ -100,46 +100,50 @@ def update_policy(
     if rabc_weights_provider is not None:
         rabc_batch_weights, rabc_batch_stats = rabc_weights_provider.compute_batch_weights(batch)
 
-    # Let accelerator handle mixed precision
-    with accelerator.autocast():
-        # Use per-sample loss when RA-BC is enabled for proper weighting
-        if rabc_batch_weights is not None:
-            # Get per-sample losses
-            per_sample_loss, output_dict = policy.forward(batch, reduction="none")
+    # accelerator.accumulate() handles gradient accumulation, it no-ops optimizer.step(), lr_scheduler.step(), and optimizer.zero_grad() on micro-batch steps, and only actually steps on every gradient_accum steps
+    # If gradient_accumulation_steps=1, this is just a no-op wrapper
+    with accelerator.accumulate(policy):
+        # Let accelerator handle mixed precision
+        with accelerator.autocast():
+            # Use per-sample loss when RA-BC is enabled for proper weighting
+            if rabc_batch_weights is not None:
+                # Get per-sample losses
+                per_sample_loss, output_dict = policy.forward(batch, reduction="none")
 
-            # Apply RA-BC weights: L_RA-BC = Σ(w_i * l_i) / (Σw_i + ε)
-            # rabc_batch_weights is already normalized to sum to batch_size
-            epsilon = 1e-6
-            loss = (per_sample_loss * rabc_batch_weights).sum() / (rabc_batch_weights.sum() + epsilon)
-            # Log raw mean weight (before normalization) - this is the meaningful metric
-            output_dict["rabc_mean_weight"] = rabc_batch_stats["raw_mean_weight"]
-            output_dict["rabc_num_zero_weight"] = rabc_batch_stats["num_zero_weight"]
-            output_dict["rabc_num_full_weight"] = rabc_batch_stats["num_full_weight"]
+                # Apply RA-BC weights: L_RA-BC = Σ(w_i * l_i) / (Σw_i + ε)
+                # rabc_batch_weights is already normalized to sum to batch_size
+                epsilon = 1e-6
+                loss = (per_sample_loss * rabc_batch_weights).sum() / (rabc_batch_weights.sum() + epsilon)
+                # Log raw mean weight (before normalization) - this is the meaningful metric
+                output_dict["rabc_mean_weight"] = rabc_batch_stats["raw_mean_weight"]
+                output_dict["rabc_num_zero_weight"] = rabc_batch_stats["num_zero_weight"]
+                output_dict["rabc_num_full_weight"] = rabc_batch_stats["num_full_weight"]
+            else:
+                loss, output_dict = policy.forward(batch)
+
+            # TODO(rcadene): policy.unnormalize_outputs(out_dict)
+
+        # Use accelerator's backward method
+        accelerator.backward(loss)
+
+        # Clip gradients if specified
+        if grad_clip_norm > 0:
+            grad_norm = accelerator.clip_grad_norm_(policy.parameters(), grad_clip_norm)
         else:
-            loss, output_dict = policy.forward(batch)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                policy.parameters(), float("inf"), error_if_nonfinite=False
+            )
 
-        # TODO(rcadene): policy.unnormalize_outputs(out_dict)
+        # Optimizer step (no-op on accumulation micro-steps)
+        with lock if lock is not None else nullcontext():
+            optimizer.step()
 
-    # Use accelerator's backward method
-    accelerator.backward(loss)
+        optimizer.zero_grad()
 
-    # Clip gradients if specified
-    if grad_clip_norm > 0:
-        grad_norm = accelerator.clip_grad_norm_(policy.parameters(), grad_clip_norm)
-    else:
-        grad_norm = torch.nn.utils.clip_grad_norm_(
-            policy.parameters(), float("inf"), error_if_nonfinite=False
-        )
-
-    # Optimizer step
-    with lock if lock is not None else nullcontext():
-        optimizer.step()
-
-    optimizer.zero_grad()
-
-    # Step through pytorch scheduler at every batch instead of epoch
-    if lr_scheduler is not None:
-        lr_scheduler.step()
+        # Step through pytorch scheduler at every batch instead of epoch
+        # (no-op on accumulation micro-steps)
+        if lr_scheduler is not None:
+            lr_scheduler.step()
 
     # Update internal buffers if policy has update method
     if has_method(accelerator.unwrap_model(policy, keep_fp32_wrapper=True), "update"):
