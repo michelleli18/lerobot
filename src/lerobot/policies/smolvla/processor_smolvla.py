@@ -27,6 +27,7 @@ from lerobot.processor import (
     NormalizerProcessorStep,
     PolicyAction,
     PolicyProcessorPipeline,
+    ProcessorStep,
     ProcessorStepRegistry,
     RenameObservationsProcessorStep,
     TokenizerProcessorStep,
@@ -34,73 +35,6 @@ from lerobot.processor import (
 )
 from lerobot.processor.converters import policy_action_to_transition, transition_to_policy_action
 from lerobot.utils.constants import POLICY_POSTPROCESSOR_DEFAULT_NAME, POLICY_PREPROCESSOR_DEFAULT_NAME
-
-
-def make_smolvla_pre_post_processors(
-    config: SmolVLAConfig,
-    dataset_stats: dict[str, dict[str, torch.Tensor]] | None = None,
-) -> tuple[
-    PolicyProcessorPipeline[dict[str, Any], dict[str, Any]],
-    PolicyProcessorPipeline[PolicyAction, PolicyAction],
-]:
-    """
-    Constructs pre-processor and post-processor pipelines for the SmolVLA policy.
-
-    The pre-processing pipeline prepares input data for the model by:
-    1.  Renaming features to match pretrained configurations.
-    2.  Normalizing input and output features based on dataset statistics.
-    3.  Adding a batch dimension.
-    4.  Ensuring the language task description ends with a newline character.
-    5.  Tokenizing the language task description.
-    6.  Moving all data to the specified device.
-
-    The post-processing pipeline handles the model's output by:
-    1.  Moving data to the CPU.
-    2.  Unnormalizing the output actions to their original scale.
-
-    Args:
-        config: The configuration object for the SmolVLA policy.
-        dataset_stats: A dictionary of statistics for normalization.
-
-    Returns:
-        A tuple containing the configured pre-processor and post-processor pipelines.
-    """
-
-    input_steps = [
-        RenameObservationsProcessorStep(rename_map={}),  # To mimic the same processor as pretrained one
-        AddBatchDimensionProcessorStep(),
-        SmolVLANewLineProcessor(),
-        TokenizerProcessorStep(
-            tokenizer_name=config.vlm_model_name,
-            padding=config.pad_language_to,
-            padding_side="right",
-            max_length=config.tokenizer_max_length,
-        ),
-        DeviceProcessorStep(device=config.device),
-        NormalizerProcessorStep(
-            features={**config.input_features, **config.output_features},
-            norm_map=config.normalization_mapping,
-            stats=dataset_stats,
-        ),
-    ]
-    output_steps = [
-        UnnormalizerProcessorStep(
-            features=config.output_features, norm_map=config.normalization_mapping, stats=dataset_stats
-        ),
-        DeviceProcessorStep(device="cpu"),
-    ]
-    return (
-        PolicyProcessorPipeline[dict[str, Any], dict[str, Any]](
-            steps=input_steps,
-            name=POLICY_PREPROCESSOR_DEFAULT_NAME,
-        ),
-        PolicyProcessorPipeline[PolicyAction, PolicyAction](
-            steps=output_steps,
-            name=POLICY_POSTPROCESSOR_DEFAULT_NAME,
-            to_transition=policy_action_to_transition,
-            to_output=transition_to_policy_action,
-        ),
-    )
 
 
 @ProcessorStepRegistry.register(name="smolvla_new_line_processor")
@@ -114,6 +48,16 @@ class SmolVLANewLineProcessor(ComplementaryDataProcessorStep):
     """
 
     def complementary_data(self, complementary_data):
+        """
+        Adds a newline to the 'task' field if it doesn't already have one.
+
+        Args:
+            complementary_data: A dictionary that may contain a 'task' key with a
+                                string or list of strings.
+
+        Returns:
+            A new dictionary with the modified 'task' field.
+        """
         if "task" not in complementary_data:
             return complementary_data
 
@@ -138,4 +82,82 @@ class SmolVLANewLineProcessor(ComplementaryDataProcessorStep):
     def transform_features(
         self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
     ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
+        """
+        This step does not alter the feature definitions.
+
+        Args:
+            features: The input feature dictionary.
+
+        Returns:
+            The unchanged feature dictionary.
+        """
         return features
+
+
+def make_smolvla_pre_post_processors(
+    config: SmolVLAConfig,
+    dataset_stats: dict[str, dict[str, torch.Tensor]] | None = None,
+) -> tuple[
+    PolicyProcessorPipeline[dict[str, Any], dict[str, Any]],
+    PolicyProcessorPipeline[PolicyAction, PolicyAction],
+]:
+    """
+    Constructs pre-processor and post-processor pipelines for the SmolVLA policy.
+
+    The pre-processing pipeline prepares input data for the model by:
+    1.  Renaming features to match pretrained configurations.
+    2.  Normalizing input and output features based on dataset statistics.
+    3.  Adding a batch dimension.
+    4.  Appending a newline character to the task description for tokenizer compatibility.
+    5.  Tokenizing the text prompt using the PaliGemma tokenizer.
+    6.  Moving all data to the specified device.
+
+    The post-processing pipeline handles the model's output by:
+    1.  Moving data to the CPU.
+    2.  Unnormalizing the output features to their original scale.
+
+    Args:
+        config: The configuration object for the SmolVLA policy.
+        dataset_stats: A dictionary of statistics for normalization.
+
+    Returns:
+        A tuple containing the configured pre-processor and post-processor pipelines.
+    """
+
+    input_steps: list[ProcessorStep] = [
+        RenameObservationsProcessorStep(rename_map={}),  # To mimic the same processor as pretrained one
+        AddBatchDimensionProcessorStep(),
+        SmolVLANewLineProcessor(),  # Add newlines before tokenization for PaliGemma
+        TokenizerProcessorStep(
+            tokenizer_name=config.vlm_model_name,
+            max_length=config.tokenizer_max_length,
+            padding_side="right",
+            padding=config.pad_language_to,
+        ),
+        DeviceProcessorStep(device=config.device),
+        NormalizerProcessorStep(
+            features={**config.input_features, **config.output_features},
+            norm_map=config.normalization_mapping,
+            stats=dataset_stats,
+        ),
+    ]
+
+    output_steps: list[ProcessorStep] = [
+        UnnormalizerProcessorStep(
+            features=config.output_features, norm_map=config.normalization_mapping, stats=dataset_stats
+        ),
+        DeviceProcessorStep(device="cpu"),
+    ]
+
+    return (
+        PolicyProcessorPipeline[dict[str, Any], dict[str, Any]](
+            steps=input_steps,
+            name=POLICY_PREPROCESSOR_DEFAULT_NAME,
+        ),
+        PolicyProcessorPipeline[PolicyAction, PolicyAction](
+            steps=output_steps,
+            name=POLICY_POSTPROCESSOR_DEFAULT_NAME,
+            to_transition=policy_action_to_transition,
+            to_output=transition_to_policy_action,
+        ),
+    )

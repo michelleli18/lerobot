@@ -68,7 +68,12 @@ from lerobot.policies.smolvla.smolvlm_with_expert import SmolVLMWithExpertModel
 from lerobot.policies.utils import (
     populate_queues,
 )
-from lerobot.utils.constants import ACTION, OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS, OBS_STATE
+from lerobot.utils.constants import (
+    ACTION,
+    OBS_LANGUAGE_ATTENTION_MASK,
+    OBS_LANGUAGE_TOKENS,
+    OBS_STATE,
+)
 from lerobot.utils.utils import get_safe_dtype
 
 
@@ -223,7 +228,9 @@ def aloha_gripper_from_angular_inv(value):
 
 
 class SmolVLAPolicy(PreTrainedPolicy):
-    """Wrapper class around VLAFlowMatching model to train and run inference within LeRobot."""
+    """
+    Wrapper class around VLAFlowMatching model to train and run inference within LeRobot.
+    """
 
     config_class = SmolVLAConfig
     name = "smolvla"
@@ -292,7 +299,7 @@ class SmolVLAPolicy(PreTrainedPolicy):
             images, img_masks, lang_tokens, lang_masks, state, noise=noise, **kwargs
         )
 
-        # Unpad actions
+        # Unpad actions to actual action dimension
         original_action_dim = self.config.action_feature.shape[0]
         actions = actions[:, :, :original_action_dim]
 
