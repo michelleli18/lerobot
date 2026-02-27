@@ -15,28 +15,16 @@
 # limitations under the License.
 
 from dataclasses import dataclass
-from typing import TypeAlias
 
 from ..config import TeleoperatorConfig
 
 
+@TeleoperatorConfig.register_subclass("openarm_mini")
 @dataclass
-class SOLeaderConfig:
-    """Base configuration class for SO Leader teleoperators."""
+class OpenArmMiniConfig(TeleoperatorConfig):
+    """Configuration for OpenArm Mini teleoperator with Feetech motors (dual arms)."""
 
-    # Port to connect to the arm
-    port: str
+    port_right: str = "/dev/ttyUSB0"
+    port_left: str = "/dev/ttyUSB1"
 
-    # Whether to use degrees for angles
     use_degrees: bool = True
-
-
-@TeleoperatorConfig.register_subclass("so101_leader")
-@TeleoperatorConfig.register_subclass("so100_leader")
-@dataclass
-class SOLeaderTeleopConfig(TeleoperatorConfig, SOLeaderConfig):
-    pass
-
-
-SO100LeaderConfig: TypeAlias = SOLeaderTeleopConfig
-SO101LeaderConfig: TypeAlias = SOLeaderTeleopConfig
