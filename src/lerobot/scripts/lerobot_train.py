@@ -433,10 +433,10 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         "dataloading_s": AverageMeter("data_s", ":.3f"),
     }
 
-    # Use effective batch size for proper epoch calculation in distributed training
-    effective_batch_size = cfg.batch_size * accelerator.num_processes
+    # Pass per-process batch size * grad_accum; MetricsTracker.step() multiplies by num_processes internally
+    grad_accum_steps = getattr(accelerator, 'gradient_accumulation_steps', 1)
     train_tracker = MetricsTracker(
-        effective_batch_size,
+        cfg.batch_size * grad_accum_steps,
         dataset.num_frames,
         dataset.num_episodes,
         train_metrics,
@@ -453,6 +453,7 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             position=0,
             leave=True,
         )
+        effective_batch_size = cfg.batch_size * accelerator.num_processes * grad_accum_steps
         logging.info(
             f"Start offline training on a fixed dataset, with effective batch size: {effective_batch_size}"
         )
