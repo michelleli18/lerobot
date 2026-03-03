@@ -396,6 +396,19 @@ class SmolVLAPolicy(PreTrainedPolicy):
         losses = losses[:, :, : self.config.max_action_dim]
         loss_dict["losses_after_rm_padding"] = losses.clone().mean().item()
 
+        # Per-joint loss decomposition averaged over batch and chunk
+        action_dim = self.config.output_features["action"].shape[0]  # 23
+        per_joint_mse = losses[:, :, :action_dim].mean(dim=(0, 1)).detach()  # (action_dim,)
+        _JOINT_SLICES = {
+            "base": slice(0, 3), "torso": slice(3, 7),
+            "left_arm": slice(7, 14), "left_gripper": slice(14, 15),
+            "right_arm": slice(15, 22), "right_gripper": slice(22, 23),
+        }
+        for comp_name, s in _JOINT_SLICES.items():
+            loss_dict[f"joint/{comp_name}_mse"] = per_joint_mse[s].mean().item()
+            for i in range(s.start, s.stop):
+                loss_dict[f"joint/{comp_name}_{i - s.start}_mse"] = per_joint_mse[i].item()
+
         if reduction == "none":
             # Return per-sample losses (B,) by averaging over time and action dims
             per_sample_loss = losses.mean(dim=(1, 2))
