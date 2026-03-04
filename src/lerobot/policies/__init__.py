@@ -21,6 +21,7 @@ from .pi05.configuration_pi05 import PI05Config as PI05Config
 from .smolvla.configuration_smolvla import SmolVLAConfig as SmolVLAConfig
 from .smolvla.processor_smolvla import SmolVLANewLineProcessor
 from .smolvla_fast.configuration_smolvla_fast import SmolVLAFastConfig as SmolVLAFastConfig
+from .smolvla_vqvae.configuration_smolvla_vqvae import SmolVLAVQVAEConfig as SmolVLAVQVAEConfig
 from .tdmpc.configuration_tdmpc import TDMPCConfig as TDMPCConfig
 from .vqbet.configuration_vqbet import VQBeTConfig as VQBeTConfig
 from .wall_x.configuration_wall_x import WallXConfig as WallXConfig
@@ -34,6 +35,7 @@ __all__ = [
     "PI0FastConfig",
     "SmolVLAConfig",
     "SmolVLAFastConfig",
+    "SmolVLAVQVAEConfig",
     "SARMConfig",
     "TDMPCConfig",
     "VQBeTConfig",

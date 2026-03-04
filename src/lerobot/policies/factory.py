@@ -40,6 +40,7 @@ from lerobot.policies.sac.reward_model.configuration_classifier import RewardCla
 from lerobot.policies.sarm.configuration_sarm import SARMConfig
 from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
 from lerobot.policies.smolvla_fast.configuration_smolvla_fast import SmolVLAFastConfig
+from lerobot.policies.smolvla_vqvae.configuration_smolvla_vqvae import SmolVLAVQVAEConfig
 from lerobot.policies.tdmpc.configuration_tdmpc import TDMPCConfig
 from lerobot.policies.utils import validate_visual_features_consistency
 from lerobot.policies.vqbet.configuration_vqbet import VQBeTConfig
@@ -120,6 +121,10 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from lerobot.policies.smolvla_fast.modeling_smolvla_fast import SmolVLAFastPolicy
 
         return SmolVLAFastPolicy
+    elif name == "smolvla_vqvae":
+        from lerobot.policies.smolvla_vqvae.modeling_smolvla_vqvae import SmolVLAVQVAEPolicy
+
+        return SmolVLAVQVAEPolicy
     elif name == "sarm":
         from lerobot.policies.sarm.modeling_sarm import SARMRewardModel
 
@@ -180,6 +185,8 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return SmolVLAConfig(**kwargs)
     elif policy_type == "smolvla_fast":
         return SmolVLAFastConfig(**kwargs)
+    elif policy_type == "smolvla_vqvae":
+        return SmolVLAVQVAEConfig(**kwargs)
     elif policy_type == "reward_classifier":
         return RewardClassifierConfig(**kwargs)
     elif policy_type == "groot":
@@ -368,6 +375,14 @@ def make_pre_post_processors(
         from lerobot.policies.smolvla_fast.processor_smolvla_fast import make_smolvla_fast_pre_post_processors
 
         processors = make_smolvla_fast_pre_post_processors(
+            config=policy_cfg,
+            dataset_stats=kwargs.get("dataset_stats"),
+        )
+
+    elif isinstance(policy_cfg, SmolVLAVQVAEConfig):
+        from lerobot.policies.smolvla_vqvae.processor_smolvla_vqvae import make_smolvla_vqvae_pre_post_processors
+
+        processors = make_smolvla_vqvae_pre_post_processors(
             config=policy_cfg,
             dataset_stats=kwargs.get("dataset_stats"),
         )

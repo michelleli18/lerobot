@@ -1,18 +1,8 @@
-#!/usr/bin/env python
+"""
+Pre/post-processing pipeline for SmolVLA + VQ-VAE policy.
 
-# Copyright 2025 HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+Simpler than the FAST processor because VQ-VAE tokenization happens inside the policy model, not in the preprocessor.
+"""
 
 from copy import deepcopy
 from dataclasses import dataclass
@@ -23,9 +13,8 @@ import torch
 import torch.nn.functional as F  # noqa: N812
 
 from lerobot.configs.types import PipelineFeatureType, PolicyFeature
-from lerobot.policies.smolvla_fast.configuration_smolvla_fast import SmolVLAFastConfig
+from lerobot.policies.smolvla_vqvae.configuration_smolvla_vqvae import SmolVLAVQVAEConfig
 from lerobot.processor import (
-    ActionTokenizerProcessorStep,
     AddBatchDimensionProcessorStep,
     DeviceProcessorStep,
     NormalizerProcessorStep,
@@ -56,11 +45,13 @@ def _pad_vector(vector, new_dim):
         return vector
     return F.pad(vector, (0, new_dim - vector.shape[-1]))
 
-@ProcessorStepRegistry.register(name="smolvla_fast_prepare_state_tokenizer_processor_step")
+@ProcessorStepRegistry.register(name="smolvla_vqvae_prepare_state_tokenizer_processor_step")
 @dataclass
-class SmolVLAFastPrepareStateAndLanguageTokenizerProcessorStep(ProcessorStep):
+class SmolVLAVQVAEPrepareStateAndLanguageProcessorStep(ProcessorStep):
     """
     Processor step to prepare the state and tokenize the language input.
+
+    Identical logic to the FAST version (state discretization is independent of the action tokenizer choice).
     """
 
     max_state_dim: int = 32
@@ -71,7 +62,7 @@ class SmolVLAFastPrepareStateAndLanguageTokenizerProcessorStep(ProcessorStep):
 
         state = transition.get(TransitionKey.OBSERVATION, {}).get(OBS_STATE)
         if state is None:
-            raise ValueError("State is required for SmolVLA-FAST")
+            raise ValueError("State is required for SmolVLA-VQVAE")
         tasks = transition.get(TransitionKey.COMPLEMENTARY_DATA, {}).get(self.task_key)
         if tasks is None:
             raise ValueError("No task found in complementary data")
@@ -107,24 +98,24 @@ class SmolVLAFastPrepareStateAndLanguageTokenizerProcessorStep(ProcessorStep):
         return features
 
 
-def make_smolvla_fast_pre_post_processors(
-    config: SmolVLAFastConfig,
+def make_smolvla_vqvae_pre_post_processors(
+    config: SmolVLAVQVAEConfig,
     dataset_stats: dict[str, dict[str, torch.Tensor]] | None = None,
 ) -> tuple[
     PolicyProcessorPipeline[dict[str, Any], dict[str, Any]],
     PolicyProcessorPipeline[PolicyAction, PolicyAction],
 ]:
     """
-    Constructs pre-processor and post-processor pipelines for the SmolVLA-FAST.
+    Constructs pre-processor and post-processor pipelines for the SmolVLA-VQVAE.
 
     The pre-processing pipeline prepares input data for the model by:
     1.  Renaming features to match pretrained configurations.
     2.  Adding a batch dimension.
     3.  Normalize state and actions to [-1, 1] (MUST come before state discretization).
-    4.  Discretize state into 256 bins and embed in text prompt.
-    5.  Tokenizing the text prompt using the PaliGemma tokenizer.
-    6.  Tokenize the actions with FAST action tokenizer.
-    7.  Moving all data to the specified device.
+    4.  Discretizing state and creating a text prompt.
+    5.  Tokenizing the text prompt.
+    6.  Moving all data to the specified device.
+    (No ActionTokenizerProcessorStep — VQ-VAE runs inside the model)
 
     Post-processing pipeline:
     1. Unnormalize actions
@@ -140,18 +131,12 @@ def make_smolvla_fast_pre_post_processors(
             norm_map=config.normalization_mapping,
             stats=dataset_stats,
         ),
-        SmolVLAFastPrepareStateAndLanguageTokenizerProcessorStep(max_state_dim=config.max_state_dim),
+        SmolVLAVQVAEPrepareStateAndLanguageProcessorStep(max_state_dim=config.max_state_dim),
         TokenizerProcessorStep(
             tokenizer_name=config.text_tokenizer_name,
             max_length=config.tokenizer_max_length,
             padding_side="right",
             padding=config.pad_language_to,
-        ),
-        ActionTokenizerProcessorStep(
-            action_tokenizer_name=config.action_tokenizer_name,
-            max_action_tokens=config.max_action_tokens,
-            fast_skip_tokens=config.fast_skip_tokens,
-            paligemma_tokenizer_name=config.text_tokenizer_name,  # SmolVLM tokenizer for token mapping
         ),
         DeviceProcessorStep(device=config.device),
     ]
