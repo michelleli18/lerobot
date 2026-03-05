@@ -347,9 +347,14 @@ class SmolVLAFastPolicy(PreTrainedPolicy):
         # for additional actions_is_pad or dimension trimming here.
         loss = loss_dict["loss"]
         detailed_loss_dict = {
-            "loss": loss.item(),
+            "loss_batch": loss.item(),
             "ce_loss": loss_dict["ce_loss"].item(),
         }
+
+        # pred_ids = loss_dict["logits"].argmax(dim=-1)
+        # token_acc = ((pred_ids == fast_action_tokens[:, 1:]) * fast_action_masks).float().sum() / fast_action_masks.sum().clamp(min=1e-6)
+        # detailed_loss_dict["train/token_accuracy"] = token_acc.item()
+
         return loss, detailed_loss_dict
 
     def prepare_images(self, batch):
@@ -872,6 +877,7 @@ class SmolVLAFastPytorch(nn.Module):
         return {
             "ce_loss": fast_loss,
             "loss": fast_loss,
+            "logits": fast_logits_for_pred,
         }
 
     @torch.no_grad()

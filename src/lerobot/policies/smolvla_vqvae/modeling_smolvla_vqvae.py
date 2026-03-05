@@ -340,9 +340,16 @@ class SmolVLAVQVAEPolicy(PreTrainedPolicy):
 
         loss = loss_dict["loss"]
         detailed_loss_dict = {
-            "loss": loss.item(),
+            "loss_batch": loss.item(),
             "ce_loss": loss_dict["ce_loss"].item(),
         }
+
+        # pred_ids = loss_dict["logits"].argmax(dim=-1)
+        # targets_for_acc = vq_action_tokens[:, 1:pred_ids.shape[1]+1]  # shape (B, T-1)
+        # masks_for_acc = vq_action_masks[:, 1:pred_ids.shape[1]+1]      # shape (B, T-1)
+        # token_acc = ((pred_ids == targets_for_acc) * masks_for_acc).float().sum() / masks_for_acc.sum().clamp(min=1e-6)
+        # detailed_loss_dict["train/token_accuracy"] = token_acc.item()
+
         return loss, detailed_loss_dict
 
     def prepare_images(self, batch):
@@ -690,10 +697,14 @@ class SmolVLAVQVAEPytorch(nn.Module):
         # apply mask and compute mean loss
         masked_loss = loss_per_token * target_masks.float()
         ce_loss = masked_loss.sum() / target_masks.sum().clamp(min=1)
+        # if sum is effectively zero (no valid tokens), return a fallback loss of zero
+        if target_masks.sum().item() == 0:
+            ce_loss = torch.tensor(0.0, device=ce_loss.device)
 
         return {
             "ce_loss": ce_loss,
-             "loss": ce_loss
+            "loss": ce_loss,
+            "logits": action_logits_for_pred,
         }
 
     @torch.no_grad()
