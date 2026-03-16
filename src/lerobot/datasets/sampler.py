@@ -59,3 +59,55 @@ class EpisodeAwareSampler:
 
     def __len__(self) -> int:
         return len(self.indices)
+
+
+class WeightedEpisodeAwareSampler:
+    def __init__(
+        self,
+        dataset_from_indices: list[int],
+        dataset_to_indices: list[int],
+        weights: dict[int, float],
+        episode_indices_to_use: list | None = None,
+        drop_n_first_frames: int = 0,
+        drop_n_last_frames: int = 0,
+        default_weight: float = 1.0,
+    ):
+        """Sampler that repeats frames proportional to their weight.
+
+        Builds an expanded index list where each frame appears ceil(weight) times.
+        For eg, if a frame has weight 3.0 it appears 3 times; weight 1.0 appears once. Every frame is guaranteed to appear at least once per epoch.
+        The expanded list is shuffled each epoch.
+
+        Args:
+            dataset_from_indices: List of indices containing the start of each episode in the dataset.
+            dataset_to_indices: List of indices containing the end of each episode in the dataset.
+            weights: Mapping from global frame index to sampling weight.
+            episode_indices_to_use: List of episode indices to use. If None, all episodes are used.
+            drop_n_first_frames: Number of frames to drop from the start of each episode.
+            drop_n_last_frames: Number of frames to drop from the end of each episode.
+            default_weight: Weight for frames not in the weights dict.
+        """
+        base_indices = []
+        for episode_idx, (start_index, end_index) in enumerate(
+            zip(dataset_from_indices, dataset_to_indices, strict=True)
+        ):
+            if episode_indices_to_use is None or episode_idx in episode_indices_to_use:
+                base_indices.extend(range(start_index + drop_n_first_frames, end_index - drop_n_last_frames))
+
+        # Build expanded list: repeat each frame ceil(weight) times
+        import math
+
+        expanded = []
+        for idx in base_indices:
+            w = weights.get(idx, default_weight)
+            repeats = max(1, math.ceil(w))
+            expanded.extend([idx] * repeats)
+
+        self.expanded_indices = expanded
+
+    def __iter__(self) -> Iterator[int]:
+        for i in torch.randperm(len(self.expanded_indices)):
+            yield self.expanded_indices[i]
+
+    def __len__(self) -> int:
+        return len(self.expanded_indices)

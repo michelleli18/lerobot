@@ -16,6 +16,7 @@
 import dataclasses
 import logging
 import time
+from pathlib import Path
 import numpy as np
 from copy import deepcopy
 from contextlib import nullcontext
@@ -31,7 +32,7 @@ from tqdm import tqdm
 from lerobot.configs import parser
 from lerobot.configs.train import TrainPipelineConfig
 from lerobot.datasets.factory import make_dataset
-from lerobot.datasets.sampler import EpisodeAwareSampler
+from lerobot.datasets.sampler import EpisodeAwareSampler, WeightedEpisodeAwareSampler
 from lerobot.datasets.utils import cycle
 from lerobot.datasets.compute_stats import compute_episode_stats
 from lerobot.envs.factory import make_env, make_env_pre_post_processors
@@ -57,6 +58,56 @@ from lerobot.utils.utils import (
     init_logging,
     inside_slurm,
 )
+
+def _load_bddl_weights(weights_path: str) -> dict[int, float]:
+    """Load precomputed BDDL transition weights from a parquet file."""
+    import pandas as pd
+    from lerobot.utils.rabc import resolve_hf_path
+
+    path = resolve_hf_path(weights_path)
+    df = pd.read_parquet(path)
+    return dict(zip(df["index"].astype(int), df["weight"].astype(float)))
+
+
+def _episode_indices_to_positions(dataset) -> list[int] | None:
+    """Convert actual episode_index values to positional indices in meta.episodes.
+
+    The samplers use enumerate position to match episode_indices_to_use, but
+    dataset.episodes contains actual episode_index values (which may not start at 0
+    or be contiguous). This function converts them so the sampler selects the right episodes.
+    """
+    if dataset.episodes is None:
+        return None
+    episodes_set = set(dataset.episodes)
+    positions = []
+    for pos in range(len(dataset.meta.episodes)):
+        ep_idx = dataset.meta.episodes[pos]["episode_index"]
+        if ep_idx in episodes_set:
+            positions.append(pos)
+    return positions
+
+
+def _build_global_to_local_map(dataset) -> dict[int, int]:
+    """Build a mapping from global frame indices to local (0-based) indices for episode-filtered datasets.
+
+    When dataset.episodes is set, hf_dataset is filtered and re-indexed 0..N-1,
+    but episode metadata still contains global indices. Samplers yield global indices
+    which must be remapped to local indices for the DataLoader.
+    """
+    global_to_local = {}
+    local_offset = 0
+    episodes_meta = dataset.meta.episodes
+    episodes_set = set(dataset.episodes)
+    for ep_pos in range(len(episodes_meta)):
+        ep_idx = episodes_meta[ep_pos]["episode_index"]
+        if ep_idx in episodes_set:
+            from_idx = episodes_meta[ep_pos]["dataset_from_index"]
+            to_idx = episodes_meta[ep_pos]["dataset_to_index"]
+            for g in range(from_idx, to_idx):
+                global_to_local[g] = local_offset + (g - from_idx)
+            local_offset += (to_idx - from_idx)
+    return global_to_local
+
 
 def update_policy(
     train_metrics: MetricsTracker,
@@ -394,16 +445,91 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     # create dataloader for offline training
     if hasattr(cfg.policy, "drop_n_last_frames"):
         shuffle = False
-        sampler = EpisodeAwareSampler(
-            dataset.meta.episodes["dataset_from_index"],
-            dataset.meta.episodes["dataset_to_index"],
-            episode_indices_to_use=dataset.episodes,
-            drop_n_last_frames=cfg.policy.drop_n_last_frames,
-            shuffle=True,
-        )
+        if cfg.use_bddl_sampling:
+            weights_path = cfg.bddl_weights_path
+            if weights_path is None:
+                # Auto-detect from dataset root
+                weights_path = str(Path(dataset.meta.root) / "bddl_weights.parquet")
+                logging.info(f"Auto-detected bddl_weights_path: {weights_path}")
+            bddl_weights = _load_bddl_weights(weights_path)
+            logging.info(f"Using WeightedEpisodeAwareSampler with {len(bddl_weights)} frame weights")
+            ep_positions = _episode_indices_to_positions(dataset)
+            if dataset.episodes is not None and (ep_positions is None or len(ep_positions) == 0):
+                raise ValueError(
+                    f"Episode filtering found no matching episodes in metadata. "
+                    f"Requested: {dataset.episodes}, "
+                    f"Available episode indices: {[ep['episode_index'] for ep in dataset.meta.episodes]}"
+                )
+            sampler = WeightedEpisodeAwareSampler(
+                dataset.meta.episodes["dataset_from_index"],
+                dataset.meta.episodes["dataset_to_index"],
+                weights=bddl_weights,
+                episode_indices_to_use=ep_positions,
+                drop_n_last_frames=cfg.policy.drop_n_last_frames,
+                default_weight=cfg.bddl_default_weight,
+            )
+            if dataset.episodes is not None:
+                g2l = _build_global_to_local_map(dataset)
+                if len(g2l) == 0:
+                    raise ValueError(
+                        f"Global-to-local mapping is empty. This likely means the sampler's "
+                        f"expanded_indices don't match the filtered dataset's frame range. "
+                        f"Check that --dataset.episodes match actual episode indices in the dataset."
+                    )
+                sampler.expanded_indices = [g2l[g] for g in sampler.expanded_indices]
+                logging.info(f"Remapped WeightedEpisodeAwareSampler: global→local for {len(g2l)} frames")
+        else:
+            ep_positions = _episode_indices_to_positions(dataset)
+            sampler = EpisodeAwareSampler(
+                dataset.meta.episodes["dataset_from_index"],
+                dataset.meta.episodes["dataset_to_index"],
+                episode_indices_to_use=ep_positions,
+                drop_n_last_frames=cfg.policy.drop_n_last_frames,
+                shuffle=True,
+            )
+            if dataset.episodes is not None:
+                g2l = _build_global_to_local_map(dataset)
+                sampler.indices = [g2l[g] for g in sampler.indices]
+                logging.info(f"Remapped EpisodeAwareSampler: global→local for {len(g2l)} frames")
     else:
-        shuffle = True
-        sampler = None
+        if cfg.use_bddl_sampling:
+            shuffle = False
+            weights_path = cfg.bddl_weights_path
+            if weights_path is None:
+                weights_path = str(Path(dataset.meta.root) / "bddl_weights.parquet")
+                logging.info(f"Auto-detected bddl_weights_path: {weights_path}")
+            bddl_weights = _load_bddl_weights(weights_path)
+            logging.info(f"Loaded {len(bddl_weights)} frame weights from parquet (covers all episodes)")
+            ep_positions = _episode_indices_to_positions(dataset)
+            if dataset.episodes is not None and (ep_positions is None or len(ep_positions) == 0):
+                raise ValueError(
+                    f"Episode filtering found no matching episodes in metadata. "
+                    f"Requested: {dataset.episodes}, "
+                    f"Available episode indices: {[ep['episode_index'] for ep in dataset.meta.episodes]}"
+                )
+            sampler = WeightedEpisodeAwareSampler(
+                dataset.meta.episodes["dataset_from_index"],
+                dataset.meta.episodes["dataset_to_index"],
+                weights=bddl_weights,
+                episode_indices_to_use=ep_positions,
+                default_weight=cfg.bddl_default_weight,
+            )
+            # When dataset is episode-filtered, hf_dataset is re-indexed 0..N-1 but the
+            # sampler yields global frame indices. Remap global→local so DataLoader works.
+            if dataset.episodes is not None:
+                g2l = _build_global_to_local_map(dataset)
+                if len(g2l) == 0:
+                    raise ValueError(
+                        f"Global-to-local mapping is empty. This likely means the sampler's "
+                        f"expanded_indices don't match the filtered dataset's frame range. "
+                        f"Check that --dataset.episodes match actual episode indices in the dataset."
+                    )
+                sampler.expanded_indices = [g2l[g] for g in sampler.expanded_indices]
+                logging.info(f"Remapped WeightedEpisodeAwareSampler: global→local for {len(g2l)} frames")
+            logging.info(f"WeightedEpisodeAwareSampler: {len(sampler)} samples/epoch (from {dataset.num_frames} base frames)")
+        else:
+            shuffle = True
+            sampler = None
 
     dataloader = torch.utils.data.DataLoader(
         dataset,

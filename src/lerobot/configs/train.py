@@ -74,6 +74,11 @@ class TrainPipelineConfig(HubMixin):
     rabc_epsilon: float = 1e-6  # Small constant for numerical stability
     rabc_head_mode: str | None = "sparse"  # For dual-head models: "sparse" or "dense"
 
+    # BDDL transition-weighted sampling params
+    use_bddl_sampling: bool = False  # Enable weighted sampling near skill transitions
+    bddl_weights_path: str | None = None  # Path to precomputed weights parquet file
+    bddl_default_weight: float = 1.0  # Weight for frames without explicit weight entry
+
     # Rename map for the observation to override the image and state keys
     rename_map: dict[str, str] = field(default_factory=dict)
     checkpoint_path: Path | None = field(init=False, default=None)
